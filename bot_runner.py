@@ -77,6 +77,8 @@ def _has_open_position(exchange, symbol: str) -> Optional[float]:
                 result = method([symbol])
             if isinstance(result, list):
                 result = next((p for p in result if isinstance(p, dict) and p.get("symbol") == symbol), None)
+                if result is None and method_name in ("fetch_positions", "fetch_positions_risk"):
+                    return 0.0
             amt = _position_amt_from_ccxt_position(result)
             if abs(amt) > 0:
                 return amt
