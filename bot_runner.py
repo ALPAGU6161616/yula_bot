@@ -61,12 +61,20 @@ def _position_amt_from_ccxt_position(pos: dict) -> float:
 
 
 def _has_open_position(exchange, symbol: str) -> Optional[float]:
-    for method_name in ("fetch_position", "fetch_positions", "fetch_positions_risk"):
+    for method_name in ("fetch_positions", "fetch_positions_risk", "fetch_position"):
         method = getattr(exchange, method_name, None)
         if method is None:
             continue
         try:
-            result = method(symbol) if method_name == "fetch_position" else method([symbol])
+            if method_name == "fetch_position":
+                result = method(symbol)
+            elif method_name in ("fetch_positions", "fetch_positions_risk"):
+                # Binance USD-M returns only currently open positions when called
+                # without symbol filters; if our symbol is missing there, we can
+                # safely treat it as flat instead of warning.
+                result = method()
+            else:
+                result = method([symbol])
             if isinstance(result, list):
                 result = next((p for p in result if isinstance(p, dict) and p.get("symbol") == symbol), None)
             amt = _position_amt_from_ccxt_position(result)
