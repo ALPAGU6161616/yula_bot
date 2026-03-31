@@ -1,0 +1,36 @@
+[Unit]
+Description=YULA Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yula
+Group=yula
+WorkingDirectory=/opt/yula-bot
+EnvironmentFile=-/etc/yula-bot.env
+Environment="PATH=/opt/yula-bot/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONDONTWRITEBYTECODE=1"
+ExecStart=/opt/yula-bot/venv/bin/python -u bot_runner.py --timeframe 15m --pairs TAOUSDT.P,MAVUSDT.P,MANTAUSDT.P,ARBUSDT.P,ATAUSDT.P,AAVEUSDT.P
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=yula-bot
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=full
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

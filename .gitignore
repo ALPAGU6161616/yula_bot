@@ -1,0 +1,42 @@
+# Environment & Secrets
+.env
+*.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Data & Cache
+*.csv
+*.xlsx
+*.pkl
+*.pickle
+data/
+cache/
+
+# Deployment
+deployment_temp/
+*.backup
+
+# OS
+.DS_Store
+Thumbs.db
