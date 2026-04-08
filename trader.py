@@ -25,48 +25,59 @@ class Trader:
         self._processed_trades = 0
         self._position = None
 
-    def process_new_trades(self, state, candle: Dict[str, Any], symbol: str) -> None:
+    def process_new_trades(self, state, candle: Dict[str, Any], symbol: str) -> bool:
         trades: List[Dict[str, Any]] = getattr(state, "trades", [])
         new_trades = trades[self._processed_trades :]
         if not new_trades:
-            return
+            return True
 
         for trade in new_trades:
-            self._handle_trade(trade, candle, symbol)
+            if not self._handle_trade(trade, candle, symbol):
+                return False
 
         self._processed_trades = len(trades)
+        return True
 
-    def _handle_trade(self, trade: Dict[str, Any], candle: Dict[str, Any], symbol: str) -> None:
+    def _handle_trade(self, trade: Dict[str, Any], candle: Dict[str, Any], symbol: str) -> bool:
         trade_type = trade.get("type")
         if not trade_type:
-            return
+            return True
 
         if trade_type in {"ENTRY_LONG", "ENTRY_SHORT"}:
             self._ensure_leverage(symbol)
-            self._on_entry(trade_type, trade, candle, symbol)
-            return
+            return self._on_entry(trade_type, trade, candle, symbol)
 
         if trade_type.startswith("EXIT_"):
-            self._on_exit(trade_type, trade, candle, symbol)
-            return
+            return self._on_exit(trade_type, trade, candle, symbol)
 
-    def _on_entry(self, trade_type: str, trade: Dict[str, Any], candle: Dict[str, Any], symbol: str) -> None:
+        return True
+
+    def _on_entry(self, trade_type: str, trade: Dict[str, Any], candle: Dict[str, Any], symbol: str) -> bool:
         is_long = trade_type == "ENTRY_LONG"
         price = float(trade.get("price") or candle["close"])
 
         if self._position and self._position.qty > 0:
-            # Strategy should not send ENTRY while still in position; ignore to be safe.
-            return
+            # Strategy should not send ENTRY while still in position; treat as a
+            # failed sync so callers can roll state back.
+            return False
 
         qty = self._calculate_order_qty(symbol, price)
         side = "buy" if is_long else "sell"
-        self._place_market_order(symbol, side=side, amount=qty, reduce_only=False, comment=trade.get("comment", trade_type))
+        if not self._place_market_order(
+            symbol,
+            side=side,
+            amount=qty,
+            reduce_only=False,
+            comment=trade.get("comment", trade_type),
+        ):
+            return False
 
         self._position = LivePosition(units=1.0 if is_long else -1.0, qty=qty)
+        return True
 
-    def _on_exit(self, trade_type: str, trade: Dict[str, Any], candle: Dict[str, Any], symbol: str) -> None:
+    def _on_exit(self, trade_type: str, trade: Dict[str, Any], candle: Dict[str, Any], symbol: str) -> bool:
         if not self._position or self._position.qty <= 0 or self._position.units == 0:
-            return
+            return False
 
         is_long = self._position.units > 0
 
@@ -74,15 +85,21 @@ class Trader:
         if trade_type == "EXIT_TP1":
             units_to_close = float(trade.get("size") or 0.0)
             if units_to_close <= 0:
-                return
+                return False
 
             current_units = abs(self._position.units)
             if current_units <= 0:
-                return
+                return False
 
             fraction = min(1.0, units_to_close / current_units)
             qty_to_close = self._position.qty * fraction
-            self._close_qty(symbol, is_long=is_long, qty=qty_to_close, comment=trade.get("comment", trade_type))
+            if not self._close_qty(
+                symbol,
+                is_long=is_long,
+                qty=qty_to_close,
+                comment=trade.get("comment", trade_type),
+            ):
+                return False
 
             self._position.qty -= qty_to_close
             if is_long:
@@ -92,17 +109,24 @@ class Trader:
 
             if self._position.qty <= 0 or abs(self._position.units) <= 1e-9:
                 self._position = None
-            return
+            return True
 
         # Full exits
-        self._close_qty(symbol, is_long=is_long, qty=self._position.qty, comment=trade.get("comment", trade_type))
+        if not self._close_qty(
+            symbol,
+            is_long=is_long,
+            qty=self._position.qty,
+            comment=trade.get("comment", trade_type),
+        ):
+            return False
         self._position = None
+        return True
 
-    def _close_qty(self, symbol: str, is_long: bool, qty: float, comment: str) -> None:
+    def _close_qty(self, symbol: str, is_long: bool, qty: float, comment: str) -> bool:
         if qty <= 0:
-            return
+            return False
         side = "sell" if is_long else "buy"
-        self._place_market_order(symbol, side=side, amount=qty, reduce_only=True, comment=comment)
+        return self._place_market_order(symbol, side=side, amount=qty, reduce_only=True, comment=comment)
 
     def _ensure_leverage(self, symbol: str) -> None:
         if symbol in self._leverage_set_for:
@@ -135,16 +159,16 @@ class Trader:
 
         return max(0.0, raw_qty)
 
-    def _place_market_order(self, symbol: str, side: str, amount: float, reduce_only: bool, comment: str) -> None:
+    def _place_market_order(self, symbol: str, side: str, amount: float, reduce_only: bool, comment: str) -> bool:
         if amount <= 0:
-            return
+            return False
 
         if not self.config.LIVE_TRADING:
             print(
                 f"[DRY-RUN] {side.upper()} {amount} {symbol} "
                 f"(reduceOnly={reduce_only}) - {comment}"
             )
-            return
+            return True
 
         params: Dict[str, Any] = {}
         if reduce_only:
@@ -152,8 +176,10 @@ class Trader:
 
         try:
             self.exchange.create_order(symbol, "market", side, amount, None, params)
+            return True
         except ccxt.InsufficientFunds as e:
-            print(f"[FAIL] {symbol} için işlem açılamadı: Yetersiz Bakiye. ({e})")
+            print(f"[FAIL] {symbol} icin islem acilamadi: Yetersiz bakiye. ({e})")
+            return False
         except Exception as e:
-            print(f"[ERROR] {symbol} işlem hatası: {e}")
-
+            print(f"[ERROR] {symbol} islem hatasi: {e}")
+            return False

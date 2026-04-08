@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import queue
 import signal
 import sys
@@ -98,6 +99,38 @@ class Engine:
     stream: BinanceFuturesKlineStream
     last_processed_ts: Optional[pd.Timestamp]
     next_index: int
+
+
+POSITION_STATE_FIELDS = (
+    "position_size",
+    "entry_price",
+    "trades",
+    "firstTPLevel",
+    "secondTPLevel",
+    "firstTPHit",
+    "secondTPHit",
+    "breakevenActive",
+    "breakevenLevel",
+    "firstTPBar",
+    "rangeTrailingStopActive",
+    "rangeTrailingStopLevel",
+    "activationLevel",
+    "trailingProfitStopActive",
+    "trailingProfitStopLevel",
+    "trailingProfitSystemTriggered",
+    "trailingProfitStopTier",
+    "highestPriceInPosition",
+    "lowestPriceInPosition",
+)
+
+
+def _snapshot_position_state(state: YulaState) -> dict:
+    return {field: copy.deepcopy(getattr(state, field, None)) for field in POSITION_STATE_FIELDS}
+
+
+def _restore_position_state(state: YulaState, snapshot: dict) -> None:
+    for field, value in snapshot.items():
+        setattr(state, field, copy.deepcopy(value))
 
 
 def warmup_engine(
@@ -284,10 +317,13 @@ def main(argv: List[str]) -> int:
                     "volume": float(item.get("volume", 0.0)),
                 }
 
+                position_snapshot = _snapshot_position_state(eng.state)
                 eng.last_processed_ts = ts
                 signal_val, eng.state = eng.strategy.calculate(candle, eng.state, eng.next_index)
                 eng.next_index += 1
-                eng.trader.process_new_trades(eng.state, candle, eng.symbol)
+                if not eng.trader.process_new_trades(eng.state, candle, eng.symbol):
+                    _restore_position_state(eng.state, position_snapshot)
+                    print(f"[WARN] {sym} order failed; position state rolled back.")
 
                 print(f"[{sym}] {ts} signal={signal_val} trades={len(getattr(eng.state, 'trades', []))}")
 
