@@ -30,6 +30,7 @@ class Config:
     SYMBOL = "BTC/USDT"
     TIMEFRAME = "15m"  # Default timeframe
     HISTORICAL_CANDLE_LIMIT = 10000
+    PAIR_HISTORY_LIMITS = os.getenv("PAIR_HISTORY_LIMITS", "")
 
     # Execution Settings
     # Use DRY-RUN by default to prevent accidental live orders.

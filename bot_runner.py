@@ -37,6 +37,36 @@ def tv_perp_to_ccxt_swap_symbol(tv_symbol: str) -> str:
     return tv_symbol
 
 
+def _parse_pair_history_limits(raw: str) -> Dict[str, int]:
+    limits: Dict[str, int] = {}
+    if not raw:
+        return limits
+
+    for item in str(raw).replace(";", ",").split(","):
+        entry = item.strip()
+        if not entry or "=" not in entry:
+            continue
+
+        pair_key, limit_text = entry.rsplit("=", 1)
+        pair_key = pair_key.strip()
+        limit_text = limit_text.strip()
+        if not pair_key or not limit_text:
+            continue
+
+        try:
+            limit_val = int(limit_text)
+        except Exception:
+            continue
+
+        if limit_val <= 0:
+            continue
+
+        normalized_symbol = tv_perp_to_ccxt_swap_symbol(pair_key)
+        limits[normalized_symbol] = limit_val
+
+    return limits
+
+
 def _position_amt_from_ccxt_position(pos: dict) -> float:
     if not isinstance(pos, dict):
         return 0.0
@@ -203,6 +233,11 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
         default=Config.HISTORICAL_CANDLE_LIMIT,
         help="Warmup candles per pair.",
     )
+    p.add_argument(
+        "--pair-history-limits",
+        default=Config.PAIR_HISTORY_LIMITS,
+        help="Comma-separated per-pair warmup limits, e.g. MANTAUSDT.P=5000,AAVEUSDT.P=7000",
+    )
     return p.parse_args(argv)
 
 
@@ -211,6 +246,7 @@ def main(argv: List[str]) -> int:
 
     tv_pairs = [p.strip() for p in (args.pairs or "").split(",") if p.strip()]
     symbols = [tv_perp_to_ccxt_swap_symbol(p) for p in tv_pairs]
+    pair_history_limits = _parse_pair_history_limits(args.pair_history_limits)
 
     if not symbols:
         print("No pairs provided.")
@@ -250,13 +286,14 @@ def main(argv: List[str]) -> int:
         pass
 
     engines: Dict[str, Engine] = {}
-    for sym in symbols:
+    for tv_pair, sym in zip(tv_pairs, symbols):
         try:
+            history_limit = pair_history_limits.get(sym, args.history_limit)
             strategy, state, df = warmup_engine(
                 data_manager,
                 sym,
                 args.timeframe,
-                args.history_limit,
+                history_limit,
                 start_from_flat=bool(args.start_from_flat),
             )
             trader = Trader(data_manager.exchange)
@@ -276,6 +313,8 @@ def main(argv: List[str]) -> int:
                 last_processed_ts=last_ts,
                 next_index=next_index,
             )
+            if history_limit != args.history_limit:
+                print(f"[INFO] Using pair-specific history limit for {tv_pair}: {history_limit}")
             print(f"[OK] Warmed up {sym} ({len(df)} candles).")
         except Exception as e:
             print(f"[ERROR] Failed to init {sym}: {e}")
