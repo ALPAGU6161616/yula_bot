@@ -288,6 +288,8 @@ def _build_backtest(
                 "Kâr/Zarar %": pnl_pct,
                 "Bakiye": equity, # Mevcut işlem sonrası bakiye
                 "_fees": tr["fees"],  # Internal: fees hesaplama için
+                # Position force-closed at backtest end => still open in reality.
+                "_is_open": ("EXIT_END" in (tr.get("exit_types") or [])),
             }
         )
         equity_curve.append(equity)
@@ -586,13 +588,21 @@ def _build_backtest(
     # İstatistikler için sadece gerçek işlemleri kullan (Kar Çekimi hariç)
     real_trades = [r for r in trade_rows if r.get("Tip") != "KAR ÇEKİMİ"]
 
-    total_trades = len(real_trades)
-    wins = len([r for r in real_trades if r.get("Net PnL", 0) > 0])
-    losses = len([r for r in real_trades if r.get("Net PnL", 0) < 0])
+    # A position force-closed at backtest end is still open in reality; its P&L is
+    # unrealized. Keep it OUT of closed-trade stats (profit factor, win rate, avg
+    # win/loss) and report it separately as "Açık P&L". Otherwise a single open
+    # trade's paper loss distorts the metrics (e.g. PF 12.6 -> 3.3).
+    open_trades = [r for r in real_trades if r.get("_is_open")]
+    closed_trades = [r for r in real_trades if not r.get("_is_open")]
+    open_pnl = sum((r.get("Net PnL") or 0.0) for r in open_trades)
+
+    total_trades = len(closed_trades)
+    wins = len([r for r in closed_trades if r.get("Net PnL", 0) > 0])
+    losses = len([r for r in closed_trades if r.get("Net PnL", 0) < 0])
     net_profit = equity - initial_balance
     net_profit_pct = (net_profit / initial_balance * 100.0) if initial_balance else 0.0
-    gross_profit = sum(r.get("Net PnL", 0) for r in real_trades if r.get("Net PnL", 0) > 0)
-    gross_loss = abs(sum(r.get("Net PnL", 0) for r in real_trades if r.get("Net PnL", 0) < 0))
+    gross_profit = sum(r.get("Net PnL", 0) for r in closed_trades if r.get("Net PnL", 0) > 0)
+    gross_loss = abs(sum(r.get("Net PnL", 0) for r in closed_trades if r.get("Net PnL", 0) < 0))
     total_fees = sum(r.get("_fees", 0) for r in real_trades)
 
     profit_factor = 0.0
@@ -603,7 +613,7 @@ def _build_backtest(
 
     avg_win = (gross_profit / wins) if wins else 0.0
     avg_loss = (-gross_loss / losses) if losses else 0.0
-    avg_trade = (net_profit / total_trades) if total_trades else 0.0
+    avg_trade = ((gross_profit - gross_loss) / total_trades) if total_trades else 0.0
 
     # Max drawdown on a mark-to-market path, not just realized closes.
     # `equity_curve` only samples balance at trade close, so a trade whose price
@@ -655,6 +665,9 @@ def _build_backtest(
         "max_drawdown_pct": max_drawdown_pct,
         "fees_usdt": total_fees,
         "open_trade": open_info,
+        # Unrealized P&L of the position force-closed at backtest end (still open).
+        "open_pnl_usdt": open_pnl,
+        "has_open_trade": bool(open_trades),
         # Kar Çekimi Bilgileri
         "total_withdrawals_usdt": sum(w["withdrawal"] for w in withdrawal_history),
         "withdrawal_count": len(withdrawal_history),
@@ -2502,6 +2515,15 @@ with st.spinner("Calculating strategy..."):
             )
             col12.metric("Fees (USDT)", f"{summary.get('fees_usdt', 0.0):.2f}")
 
+            if summary.get("has_open_trade"):
+                op = summary.get("open_pnl_usdt", 0.0)
+                st.info(
+                    f"ℹ️ Son işlem hâlâ **AÇIK** (backtest sonunda son fiyattan işaretlendi). "
+                    f"Açık P&L (gerçekleşmemiş): **{op:+,.2f} USD**. "
+                    f"Profit Factor, Win Rate ve ortalamalar bu açık işlem **hariç** "
+                    f"(yalnızca kapanmış işlemler) hesaplanır. Bitiş bakiyesi açık pozisyonu mark-to-market içerir."
+                )
+
             # --- KAR ÇEKİMİ BİLGİLERİ ---
             if bt_enable_profit_withdrawal:
                 st.markdown("---")
@@ -2558,7 +2580,41 @@ with st.spinner("Calculating strategy..."):
                 if "Bakiye" in display_df.columns:
                     display_df["Bakiye"] = display_df["Bakiye"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else "")
                 
-                st.dataframe(display_df, use_container_width=True, height=400)
+                st.caption("Bir işleme tıkla → grafik o tarihe gider.")
+                trade_sel = st.dataframe(
+                    display_df,
+                    use_container_width=True,
+                    height=400,
+                    on_select="rerun",
+                    selection_mode="single-row",
+                    key="bt_trade_list",
+                )
+
+                # Clicking a trade row navigates the chart to that trade's entry date.
+                sel_rows = []
+                if isinstance(trade_sel, dict):
+                    sel_rows = (trade_sel.get("selection") or {}).get("rows") or []
+                elif hasattr(trade_sel, "selection"):
+                    sel_rows = getattr(trade_sel.selection, "rows", []) or []
+
+                if sel_rows:
+                    row_idx = int(sel_rows[0])
+                    if 0 <= row_idx < len(bt_trades_df):
+                        ts_str = bt_trades_df.iloc[row_idx].get("Tarih/Saat")
+                        last_key = (row_idx, ts_str)
+                        if ts_str and st.session_state.get("_bt_trade_goto_last") != last_key:
+                            try:
+                                target = pd.to_datetime(ts_str, format="%d %b %Y, %H:%M").to_pydatetime()
+                                st.session_state["_bt_trade_goto_last"] = last_key
+                                st.session_state["chart_goto"] = {
+                                    "mode": "date",
+                                    "target": target,
+                                    "window": 200,
+                                }
+                                st.session_state["chart_goto_token"] = str(int(time.time() * 1000))
+                                st.rerun()
+                            except Exception:
+                                pass
             else:
                 st.info("No closed trades in backtest range.")
 
