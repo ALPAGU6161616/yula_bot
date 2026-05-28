@@ -2,8 +2,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 import ccxt
-import plotly.io as pio
-import plotly.graph_objects as go
+import plotly.graph_objects as go  # retained for the replay-selecting Plotly fallback only
 import json
 import hashlib
 import queue
@@ -13,6 +12,7 @@ from data_manager import DataManager
 from yula_strategy import YulaStrategy, YulaState
 from trader import Trader
 from visualizer import Visualizer
+from tv_visualizer import build_chart_payload, render_tv_chart
 from binance_ws import BinanceFuturesKlineStream, ccxt_symbol_to_binance_symbol
 import time
 import datetime as dt
@@ -41,526 +41,6 @@ DATA_CACHE_VERSION = 2
 REPLAY_STEP = 1
 REPLAY_SPEED = 5.0
 
-TV_AXIS_SCALE_POST_SCRIPT = r"""
-(function(){
-  const gd = document.getElementById('{plot_id}');
-  if(!gd || !window.Plotly){ return; }
-
-  let dragging = false;
-  let axis = null; // 'x' or 'y'
-  let startClientX = 0;
-  let startClientY = 0;
-  let startXRange = null;
-  let startYRange = null;
-  let anchorX = null;
-  let anchorY = null;
-
-  let rafId = null;
-  let pendingUpdate = null;
-
-  function toMs(v){
-    if(v === null || v === undefined) return null;
-    if(typeof v === 'number') return v;
-    const d = new Date(v);
-    const t = d.getTime();
-    return Number.isFinite(t) ? t : null;
-  }
-
-  function getSize(){
-    return gd._fullLayout && gd._fullLayout._size ? gd._fullLayout._size : null;
-  }
-
-  function scheduleRelayout(update){
-    pendingUpdate = Object.assign(pendingUpdate || {}, update);
-    if(rafId) return;
-    rafId = requestAnimationFrame(function(){
-      const u = pendingUpdate;
-      pendingUpdate = null;
-      rafId = null;
-      try { Plotly.relayout(gd, u); } catch(e) {}
-    });
-  }
-
-  function getAxes(){
-    const fl = gd._fullLayout || {};
-    const xaxis = fl.xaxis;
-    const yaxis = fl.yaxis;
-    const xr = xaxis && xaxis.range ? xaxis.range.slice() : null;
-    const yr = yaxis && yaxis.range ? yaxis.range.slice() : null;
-    return {xaxis, yaxis, xr, yr};
-  }
-
-  function onMouseDown(e){
-    // Ignore right/middle click
-    if(e.button !== 0) return;
-    const size = getSize();
-    if(!size) return;
-
-    const rect = gd.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    const left = size.l;
-    const right = size.l + size.w;
-    const top = size.t;
-    const bottom = size.t + size.h;
-
-    const inYScale = (x >= right && x <= right + size.r && y >= top && y <= bottom);
-    const inXScale = (y >= bottom && y <= bottom + size.b && x >= left && x <= right);
-
-    if(!(inYScale || inXScale)) return;
-
-    // Prevent Plotly default axis drag (pan)
-    e.preventDefault();
-    e.stopPropagation();
-
-    const {xaxis, yaxis, xr, yr} = getAxes();
-
-    dragging = true;
-    startClientX = e.clientX;
-    startClientY = e.clientY;
-
-    if(inYScale && yr){
-      axis = 'y';
-      startYRange = yr.slice();
-
-      let a = null;
-      if(yaxis && typeof yaxis.p2c === 'function'){
-        const py = y - top;
-        const v = yaxis.p2c(py);
-        if(typeof v === 'number' && Number.isFinite(v)) a = v;
-      }
-      if(a === null){
-        a = (startYRange[0] + startYRange[1]) / 2;
-      }
-      anchorY = a;
-      document.body.style.cursor = 'ns-resize';
-    } else if(inXScale && xr){
-      axis = 'x';
-      startXRange = xr.slice();
-
-      const x0 = toMs(startXRange[0]);
-      const x1 = toMs(startXRange[1]);
-      if(x0 !== null && x1 !== null){
-        let a = null;
-        if(xaxis && typeof xaxis.p2c === 'function'){
-          const px = x - left;
-          const v = xaxis.p2c(px);
-          const t = toMs(v);
-          if(t !== null) a = t;
-        }
-        if(a === null){
-          a = (x0 + x1) / 2;
-        }
-        anchorX = a;
-      } else {
-        anchorX = null;
-      }
-      document.body.style.cursor = 'ew-resize';
-    } else {
-      dragging = false;
-      axis = null;
-      return;
-    }
-
-    window.addEventListener('mousemove', onMouseMove, true);
-    window.addEventListener('mouseup', onMouseUp, true);
-  }
-
-  function onMouseMove(e){
-    if(!dragging || !axis) return;
-    e.preventDefault();
-    e.stopPropagation();
-
-    if(axis === 'y'){
-      if(!startYRange) return;
-      const dy = e.clientY - startClientY;
-      const scale = Math.exp(dy * 0.003);
-      const y0 = startYRange[0];
-      const y1 = startYRange[1];
-      const a = anchorY;
-      let ny0 = a + (y0 - a) * scale;
-      let ny1 = a + (y1 - a) * scale;
-      if(!Number.isFinite(ny0) || !Number.isFinite(ny1) || ny0 === ny1) return;
-      if(ny0 > ny1){ const t = ny0; ny0 = ny1; ny1 = t; }
-      const minRange = 1e-12;
-      if(Math.abs(ny1 - ny0) < minRange) return;
-      scheduleRelayout({'yaxis.autorange': false, 'yaxis.range': [ny0, ny1]});
-    } else if(axis === 'x'){
-      if(!startXRange || anchorX === null) return;
-      const dx = e.clientX - startClientX;
-      const scale = Math.exp(-dx * 0.003);
-      const x0 = toMs(startXRange[0]);
-      const x1 = toMs(startXRange[1]);
-      if(x0 === null || x1 === null) return;
-      const a = anchorX;
-      let nx0 = a + (x0 - a) * scale;
-      let nx1 = a + (x1 - a) * scale;
-      if(!Number.isFinite(nx0) || !Number.isFinite(nx1) || nx0 === nx1) return;
-      if(nx0 > nx1){ const t = nx0; nx0 = nx1; nx1 = t; }
-      const minRangeMs = 60 * 1000; // 1 minute
-      if((nx1 - nx0) < minRangeMs) return;
-      scheduleRelayout({'xaxis.autorange': false, 'xaxis.range': [new Date(nx0), new Date(nx1)]});
-    }
-  }
-
-  function onMouseUp(e){
-    if(!dragging) return;
-    dragging = false;
-    axis = null;
-    startXRange = null;
-    startYRange = null;
-    anchorX = null;
-    anchorY = null;
-    document.body.style.cursor = '';
-    window.removeEventListener('mousemove', onMouseMove, true);
-    window.removeEventListener('mouseup', onMouseUp, true);
-  }
-
-  gd.addEventListener('mousedown', onMouseDown, true);
-})();
-"""
-
-TV_REALTIME_CANDLE_POST_SCRIPT = r"""
-(function(){
-  const gd = document.getElementById('{plot_id}');
-  if(!gd || !window.Plotly || !window.WebSocket){ return; }
-
-  const STREAM = "__STREAM__";
-  const WS_URL = "wss://fstream.binance.com/ws/" + STREAM;
-  const MAX_POINTS = __MAX_POINTS__;
-  const TZ_SHIFT_MS = __TZ_SHIFT_MS__;
-  const AUTO_SCROLL = __AUTO_SCROLL__;
-
-  let ws = null;
-  let reconnectTimer = null;
-
-  let liveTraceIdx = null;
-  let priceTraceIdx = null;
-  let lastAppendedShiftedOpenMs = null;
-
-  let lastPrice = null;
-  let lastPriceStr = null;
-  let lastCloseTimeMs = null;
-  let lastOpenTimeMs = null;
-  let lastOpen = null;
-  let lastHigh = null;
-  let lastLow = null;
-
-  let overlayReady = false;
-  let shapeIndex = null;
-  let annoIndex = null;
-
-  let rafId = null;
-  let pendingUpdate = null;
-
-  function scheduleRelayout(update){
-    pendingUpdate = Object.assign(pendingUpdate || {}, update);
-    if(rafId) return;
-    rafId = requestAnimationFrame(function(){
-      const u = pendingUpdate;
-      pendingUpdate = null;
-      rafId = null;
-      try { Plotly.relayout(gd, u); } catch(e) {}
-    });
-  }
-
-  function findLiveTraceIndex(){
-    for(let i=0;i<gd.data.length;i++){
-      const t = gd.data[i];
-      if(t && t.type === 'candlestick' && t.name === 'LIVE'){
-        return i;
-      }
-    }
-    return null;
-  }
-
-  function findPriceTraceIndex(){
-    for(let i=0;i<gd.data.length;i++){
-      const t = gd.data[i];
-      if(t && t.type === 'candlestick' && t.name === 'Price'){
-        return i;
-      }
-    }
-    for(let i=0;i<gd.data.length;i++){
-      const t = gd.data[i];
-      if(t && t.type === 'candlestick' && t.name !== 'LIVE'){
-        return i;
-      }
-    }
-    return null;
-  }
-
-  function initLastAppended(){
-    if(priceTraceIdx === null){
-      priceTraceIdx = findPriceTraceIndex();
-    }
-    if(priceTraceIdx === null) return;
-    const xArr = gd.data[priceTraceIdx] && gd.data[priceTraceIdx].x ? gd.data[priceTraceIdx].x : null;
-    if(!xArr || !xArr.length) return;
-    const t = new Date(xArr[xArr.length - 1]).getTime();
-    if(Number.isFinite(t)) lastAppendedShiftedOpenMs = t;
-  }
-
-  function tryAutoScroll(lastBarShiftedOpenMs, barMs){
-    if(!AUTO_SCROLL) return;
-    const xaxis = gd._fullLayout && gd._fullLayout.xaxis ? gd._fullLayout.xaxis : null;
-    if(!xaxis || !xaxis.range || xaxis.range.length < 2) return;
-
-    const x0 = new Date(xaxis.range[0]).getTime();
-    const x1 = new Date(xaxis.range[1]).getTime();
-    if(!Number.isFinite(x0) || !Number.isFinite(x1)) return;
-
-    const pad = Math.max(barMs, 60 * 1000);
-    const eps = pad * 2;
-    if(Math.abs(x1 - (lastBarShiftedOpenMs + pad)) > eps && Math.abs(x1 - lastBarShiftedOpenMs) > eps) return;
-
-    const width = x1 - x0;
-    if(!(width > 0)) return;
-    const newX1 = lastBarShiftedOpenMs + pad;
-    const newX0 = newX1 - width;
-    scheduleRelayout({'xaxis.autorange': false, 'xaxis.range': [new Date(newX0), new Date(newX1)]});
-  }
-
-  function ensureOverlay(){
-    if(overlayReady) return;
-    liveTraceIdx = findLiveTraceIndex();
-    priceTraceIdx = findPriceTraceIndex();
-    initLastAppended();
-
-    const shapes = (gd.layout.shapes || []).slice();
-    const annotations = (gd.layout.annotations || []).slice();
-
-    shapeIndex = shapes.length;
-    annoIndex = annotations.length;
-
-    shapes.push({
-      type: 'line',
-      xref: 'paper',
-      x0: 0,
-      x1: 1,
-      yref: 'y',
-      y0: 0,
-      y1: 0,
-      line: {color: '#A0A0A0', width: 1, dash: 'dot'}
-    });
-
-    annotations.push({
-      xref: 'paper',
-      x: 1,
-      xanchor: 'left',
-      xshift: 6,
-      yref: 'y',
-      y: 0,
-      text: '',
-      showarrow: false,
-      bgcolor: '#FFFFFF',
-      bordercolor: '#FFFFFF',
-      borderwidth: 1,
-      font: {color: '#000000', size: 12},
-      align: 'left'
-    });
-
-    scheduleRelayout({shapes: shapes, annotations: annotations});
-    overlayReady = true;
-  }
-
-  function pad2(n){ return String(n).padStart(2,'0'); }
-
-  function formatRemaining(ms){
-    if(ms < 0) ms = 0;
-    const total = Math.floor(ms / 1000);
-    const m = Math.floor(total / 60);
-    const s = total % 60;
-    if(m >= 60){
-      const h = Math.floor(m / 60);
-      const mm = m % 60;
-      return pad2(h) + ':' + pad2(mm) + ':' + pad2(s);
-    }
-    return pad2(m) + ':' + pad2(s);
-  }
-
-  function updateOverlay(){
-    if(lastPrice === null || lastCloseTimeMs === null) return;
-    ensureOverlay();
-    const remaining = lastCloseTimeMs - Date.now();
-    const t = formatRemaining(remaining);
-    const priceText = lastPriceStr !== null ? lastPriceStr : String(lastPrice);
-    const text = priceText + '<br>' + t;
-
-    const u = {};
-    u[`shapes[${shapeIndex}].y0`] = lastPrice;
-    u[`shapes[${shapeIndex}].y1`] = lastPrice;
-    u[`annotations[${annoIndex}].y`] = lastPrice;
-    u[`annotations[${annoIndex}].text`] = text;
-    scheduleRelayout(u);
-  }
-
-  function updateLiveCandle(){
-    if(liveTraceIdx === null){
-      liveTraceIdx = findLiveTraceIndex();
-      if(liveTraceIdx === null) return;
-    }
-    if(lastOpenTimeMs === null || lastOpen === null || lastHigh === null || lastLow === null || lastPrice === null) return;
-    try{
-      Plotly.restyle(gd, {
-        x: [[new Date(lastOpenTimeMs + TZ_SHIFT_MS)]],
-        open: [[lastOpen]],
-        high: [[lastHigh]],
-        low: [[lastLow]],
-        close: [[lastPrice]]
-      }, [liveTraceIdx]);
-    } catch(e) {}
-  }
-
-  function appendClosedToHistory(openTime, open, high, low, close, barMs){
-    if(priceTraceIdx === null){
-      priceTraceIdx = findPriceTraceIndex();
-      initLastAppended();
-    }
-    if(priceTraceIdx === null) return;
-
-    const shiftedOpenMs = openTime + TZ_SHIFT_MS;
-    if(lastAppendedShiftedOpenMs !== null && shiftedOpenMs <= lastAppendedShiftedOpenMs) return;
-    lastAppendedShiftedOpenMs = shiftedOpenMs;
-
-    try{
-      Plotly.extendTraces(gd, {
-        x: [[new Date(shiftedOpenMs)]],
-        open: [[open]],
-        high: [[high]],
-        low: [[low]],
-        close: [[close]]
-      }, [priceTraceIdx], (MAX_POINTS && MAX_POINTS > 0) ? MAX_POINTS : undefined);
-    } catch(e) {}
-
-    tryAutoScroll(lastOpenTimeMs + TZ_SHIFT_MS, barMs);
-  }
-
-  function onMessage(ev){
-    let msg;
-    try { msg = JSON.parse(ev.data); } catch(e) { return; }
-    const data = msg.data || msg;
-    if(!data || data.e !== 'kline') return;
-    const k = data.k;
-    if(!k) return;
-
-    const openTime = k.t;
-    const closeTime = k.T;
-    const isClosed = !!k.x;
-    const open = parseFloat(k.o);
-    const high = parseFloat(k.h);
-    const low = parseFloat(k.l);
-    const close = parseFloat(k.c);
-
-    if(!Number.isFinite(openTime) || !Number.isFinite(closeTime)) return;
-    if(!Number.isFinite(open) || !Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) return;
-
-    const barMs = Math.max(1, (closeTime - openTime + 1));
-
-    lastOpenTimeMs = openTime;
-    lastCloseTimeMs = closeTime;
-
-    lastOpen = open;
-    lastHigh = high;
-    lastLow = low;
-
-    lastPrice = close;
-    lastPriceStr = (typeof k.c === 'string') ? k.c : null;
-
-    if(isClosed){
-      appendClosedToHistory(openTime, open, high, low, close, barMs);
-
-      // Move the live candle to the next interval to avoid double-drawing the just-closed bar.
-      lastOpenTimeMs = openTime + barMs;
-      lastCloseTimeMs = closeTime + barMs;
-      lastOpen = close;
-      lastHigh = close;
-      lastLow = close;
-      lastPrice = close;
-      lastPriceStr = lastPriceStr;
-    }
-
-    // Throttle DOM updates to animation frames
-    if(!gd.__tvLiveUpdateScheduled){
-      gd.__tvLiveUpdateScheduled = true;
-      requestAnimationFrame(function(){
-        gd.__tvLiveUpdateScheduled = false;
-        updateLiveCandle();
-        updateOverlay();
-      });
-    }
-  }
-
-  function connect(){
-    if(ws && (ws.readyState === 0 || ws.readyState === 1)) return;
-    try {
-      ws = new WebSocket(WS_URL);
-      ws.onmessage = onMessage;
-      ws.onclose = function(){
-        ws = null;
-        if(reconnectTimer) clearTimeout(reconnectTimer);
-        reconnectTimer = setTimeout(connect, 1500);
-      };
-      ws.onerror = function(){
-        try { ws.close(); } catch(e) {}
-      };
-    } catch(e) {}
-  }
-
-  // Tick countdown even if price isn't updating
-  setInterval(updateOverlay, 1000);
-  connect();
-})();
-"""
-
-def render_plotly_chart(
-    fig,
-    *,
-    tv_axis_scaling: bool,
-    realtime_candle: bool,
-    symbol: str | None = None,
-    timeframe: str | None = None,
-    max_points: int | None = None,
-    auto_scroll: bool = True,
-    height: int | None = None,
-) -> None:
-    config = {
-        "scrollZoom": True,
-        "displayModeBar": True,
-        "displaylogo": False,
-        "responsive": True,
-    }
-    fig_height = height or int(getattr(fig.layout, "height", 800) or 800)
-
-    if tv_axis_scaling or realtime_candle:
-        post_scripts = []
-        if tv_axis_scaling:
-            post_scripts.append(TV_AXIS_SCALE_POST_SCRIPT)
-
-        if realtime_candle and symbol and timeframe:
-            stream_symbol = ccxt_symbol_to_binance_symbol(symbol)
-            stream = f"{stream_symbol}@kline_{timeframe}"
-            post_scripts.append(
-                TV_REALTIME_CANDLE_POST_SCRIPT
-                .replace("__STREAM__", stream)
-                .replace("__MAX_POINTS__", str(int(max_points) if max_points is not None else 0))
-                .replace("__TZ_SHIFT_MS__", str(3 * 60 * 60 * 1000))
-                .replace("__AUTO_SCROLL__", "true" if auto_scroll else "false")
-            )
-
-        html = pio.to_html(
-            fig,
-            full_html=False,
-            include_plotlyjs="cdn",
-            config=config,
-            post_script="\n".join(post_scripts) if post_scripts else None,
-            default_width="100%",
-            default_height=f"{fig_height}px",
-        )
-        components.html(html, height=fig_height, scrolling=False)
-    else:
-        st.plotly_chart(fig, use_container_width=True, config=config)
 
 def _config_signature(config: dict) -> str:
     try:
@@ -1125,10 +605,29 @@ def _build_backtest(
     avg_loss = (-gross_loss / losses) if losses else 0.0
     avg_trade = (net_profit / total_trades) if total_trades else 0.0
 
-    peak = equity_curve[0] if equity_curve else initial_balance
+    # Max drawdown on a mark-to-market path, not just realized closes.
+    # `equity_curve` only samples balance at trade close, so a trade whose price
+    # swung hard against the position but recovered to ~breakeven (large MAE,
+    # tiny realized PnL) would hide its true intra-trade trough — understating
+    # the real risk (and contradicting the per-trade "Düşüş %"). Reconstruct the
+    # worst-case path by inserting each trade's intra-trade trough
+    # (entry equity − its MAE) just before its realized close balance.
+    mtm_curve = [initial_balance]
+    for r in real_trades:
+        bakiye = r.get("Bakiye")
+        if bakiye is None:
+            continue
+        net_pnl = r.get("Net PnL") or 0.0
+        mae_usd = r.get("Düşüş (USD)")
+        if mae_usd is not None and abs(mae_usd) > 0:
+            entry_equity = bakiye - net_pnl
+            mtm_curve.append(entry_equity - abs(mae_usd))  # worst unrealized point
+        mtm_curve.append(bakiye)  # realized close
+
+    peak = mtm_curve[0] if mtm_curve else initial_balance
     max_drawdown = 0.0
     max_drawdown_pct = 0.0
-    for eq in equity_curve:
+    for eq in mtm_curve:
         if eq > peak:
             peak = eq
         drawdown = peak - eq
@@ -2672,22 +2171,15 @@ with st.spinner("Calculating strategy..."):
         
         # --- 6. Visualizer ---
         trades = getattr(state, 'trades', [])
-        
-        visualizer = Visualizer()
+
         df_plot = df
         state_history_view = state_history
         if len(state_history) != len(df_plot):
             state_history_view = state_history[-len(df_plot):]
-        fig = visualizer.plot_strategy(
-            df_plot,
-            state_history_view,
-            trades=trades,
-            config=config_overrides,
-            max_display_candles=int(render_candle_limit),
-        )
-        goto_token = st.session_state.get("chart_goto_token", "base")
-        fig.update_layout(uirevision=f"{symbol}:{timeframe}:{goto_token}")
 
+        # Resolve visible-window override from "go to date/range" controls.
+        view_start = None
+        view_end = None
         goto_cfg = st.session_state.get("chart_goto")
         if goto_cfg:
             df_min = _to_gmt3(df_plot["timestamp"].min()) if not df_plot.empty else None
@@ -2747,85 +2239,58 @@ with st.spinner("Calculating strategy..."):
                         end = df_max
 
             if start is not None and end is not None:
-                fig.update_xaxes(range=[start, end])
-
-        if replay_marker_ts is not None:
-            fig.add_vline(x=replay_marker_ts, line_width=2, line_color="#2E77FF")
+                view_start = start
+                view_end = end
 
         realtime_enabled = bool(realtime_candle) and chart_until_ms is None and not replay_enabled
-        if realtime_enabled and not df_plot.empty:
-            try:
-                tf_seconds = int(data_manager.exchange.parse_timeframe(timeframe))
-            except Exception:
-                tf_seconds = {
-                    "1m": 60,
-                    "3m": 180,
-                    "5m": 300,
-                    "15m": 900,
-                    "30m": 1800,
-                    "1h": 3600,
-                    "2h": 7200,
-                    "4h": 14400,
-                    "1d": 86400,
-                }.get(timeframe, 0)
+        replay_selecting = bool(replay_enabled and st.session_state.get("replay_selecting", False))
 
-            if tf_seconds:
-                last_close = float(df_plot["close"].iloc[-1])
-                last_ts = pd.to_datetime(df_plot["timestamp"].iloc[-1])
-                if isinstance(last_ts, pd.Timestamp) and last_ts.tzinfo is not None:
-                    last_ts = last_ts.tz_convert("UTC").tz_localize(None)
-                live_open_ts = last_ts + pd.Timedelta(seconds=tf_seconds)
-                live_x = live_open_ts + pd.Timedelta(hours=3)
+        if replay_selecting:
+            # Plotly is retained here only because Lightweight Charts has no
+            # Streamlit-native click event. The "Bölge Seç" picker depends on
+            # st.plotly_chart's on_select to translate user clicks back into
+            # session_state. Everything else uses the TradingView renderer.
+            visualizer = Visualizer()
+            fig = visualizer.plot_strategy(
+                df_plot,
+                state_history_view,
+                trades=trades,
+                config=config_overrides,
+                max_display_candles=int(render_candle_limit),
+            )
+            goto_token = st.session_state.get("chart_goto_token", "base")
+            fig.update_layout(uirevision=f"{symbol}:{timeframe}:{goto_token}")
+            if view_start is not None and view_end is not None:
+                fig.update_xaxes(range=[view_start, view_end])
+            if replay_marker_ts is not None:
+                fig.add_vline(x=replay_marker_ts, line_width=2, line_color="#2E77FF")
 
-                live_trace = go.Candlestick(
-                    x=[live_x],
-                    open=[last_close],
-                    high=[last_close],
-                    low=[last_close],
-                    close=[last_close],
-                    name="LIVE",
-                    showlegend=False,
-                    increasing=dict(line=dict(color="#089981"), fillcolor="#089981"),
-                    decreasing=dict(line=dict(color="#F23645"), fillcolor="#F23645"),
-                    hoverinfo="skip",
-                )
+            plot_config = {
+                "scrollZoom": True,
+                "displayModeBar": True,
+                "displaylogo": False,
+                "responsive": True,
+            }
 
-                fig.add_trace(live_trace)
-
-        plot_config = {
-            "scrollZoom": True,
-            "displayModeBar": True,
-            "displaylogo": False,
-            "responsive": True,
-        }
-        if replay_enabled:
-            # Check if selection mode is active (user clicked "Bölge Seç")
-            replay_selecting = st.session_state.get("replay_selecting", False)
-            
-            # Only add selection trace when in selection mode (no blue shadow in normal mode)
-            if replay_selecting and not df_plot.empty:
+            if not df_plot.empty:
                 pick_ts = pd.to_datetime(df_plot["timestamp"])
                 if getattr(pick_ts.dt, "tz", None) is not None:
                     pick_ts = pick_ts.dt.tz_convert("UTC").dt.tz_localize(None)
                 pick_ts = pick_ts + pd.Timedelta(hours=3)
                 pick_ts = pick_ts.reset_index(drop=True)
                 pick_idx = pd.Series(range(len(pick_ts)))
-                
-                # Use only close values for better performance
                 fig.add_trace(
                     go.Scatter(
                         x=pick_ts,
                         y=df_plot["close"].reset_index(drop=True),
                         mode="markers",
-                        marker=dict(size=15, color="rgba(0,0,0,0)"),  # Completely transparent
+                        marker=dict(size=15, color="rgba(0,0,0,0)"),
                         hoverinfo="none",
                         showlegend=False,
                         customdata=pick_idx,
                         name="__replay_pick__",
                     )
                 )
-                
-                # Enable crosshair (blue vertical line) in selection mode
                 fig.update_layout(
                     clickmode="event+select",
                     hovermode="x",
@@ -2840,28 +2305,18 @@ with st.spinner("Calculating strategy..."):
                     spikedash="solid",
                     spikecolor="#2E77FF",
                 )
-            else:
-                # Normal mode - no crosshair, no selection trace
-                fig.update_layout(
-                    clickmode="none",
-                    hovermode="x unified",
-                )
-                fig.update_xaxes(showspikes=False)
-            
             fig.update_yaxes(showspikes=False)
-            
-            # Render chart
+
             selection = st.plotly_chart(
                 fig,
                 use_container_width=True,
                 config=plot_config,
-                on_select="rerun" if replay_selecting else "ignore",
+                on_select="rerun",
                 selection_mode="points",
                 key="replay_chart",
             )
-            
-            # Only process selection when in selection mode and not playing
-            if replay_playing or not replay_selecting:
+
+            if replay_playing:
                 selection = None
             selection_state = selection if selection is not None else st.session_state.get("replay_chart")
             selection_data = None
@@ -2918,19 +2373,30 @@ with st.spinner("Calculating strategy..."):
                         idx = max(0, min(idx, len(df_full) - 1))
                         st.session_state["replay_index"] = idx
                         st.session_state["replay_playing"] = False
-                    # Auto-disable selection mode after successful selection
                     st.session_state["replay_selecting"] = False
                     st.rerun()
         else:
-            render_plotly_chart(
-                fig,
-                tv_axis_scaling=bool(tv_axis_scaling),
-                realtime_candle=realtime_enabled,
-                symbol=symbol,
-                timeframe=timeframe,
-                max_points=int(render_candle_limit),
-                auto_scroll=bool(auto_scroll_live) and not replay_enabled,
+            live_stream_url = None
+            if realtime_enabled and symbol and timeframe:
+                stream_symbol = ccxt_symbol_to_binance_symbol(symbol)
+                live_stream_url = f"wss://fstream.binance.com/ws/{stream_symbol}@kline_{timeframe}"
+
+            # Lightweight Charts handles 100k+ points easily, so the per-renderer
+            # cap (render_candle_limit) is intentionally bypassed here. The slider
+            # is still honored by the Plotly fallback used in replay-selecting mode.
+            tv_payload = build_chart_payload(
+                df_plot,
+                state_history_view,
+                trades=trades,
+                config=config_overrides,
+                symbol=symbol or "",
+                timeframe=timeframe or "",
+                live_stream_url=live_stream_url,
+                max_display_candles=None,
+                view_from=view_start,
+                view_to=view_end,
             )
+            render_tv_chart(tv_payload, height=720)
         
         # --- 7. Trade History Table ---
         if trades:

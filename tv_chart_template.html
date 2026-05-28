@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #131722; color: #d1d4dc;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif; }
+  #tv-chart { position: absolute; inset: 0; }
+  #tv-legend { position: absolute; top: 8px; left: 12px; z-index: 5; pointer-events: none;
+    font-size: 12px; line-height: 1.4; color: #d1d4dc; text-shadow: 0 1px 2px rgba(0,0,0,.7); }
+  #tv-legend .sym { font-size: 14px; font-weight: 600; color: #fff; }
+  #tv-legend .ohlc span { margin-right: 8px; }
+  .up { color: #089981; } .down { color: #F23645; }
+</style>
+</head>
+<body>
+<div id="tv-chart"></div>
+<div id="tv-legend"></div>
+<script>__LIGHTWEIGHT_CHARTS_JS__</script>
+<script>
+(function () {
+  const payload = __PAYLOAD__;
+  const LWC = window.LightweightCharts;
+  const LineStyle = LWC.LineStyle;
+  window.__tvPayload = payload;
+
+  const cfg = payload.config || {};
+  const container = document.getElementById('tv-chart');
+  const legend = document.getElementById('tv-legend');
+
+  const chart = LWC.createChart(container, {
+    layout: {
+      background: { type: 'solid', color: '#131722' },
+      textColor: '#d1d4dc',
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+      fontSize: 12,
+    },
+    grid: {
+      vertLines: { color: '#1e222d' },
+      horzLines: { color: '#1e222d' },
+    },
+    crosshair: {
+      // Normal mode: the crosshair follows the cursor freely and the right
+      // axis shows the exact price under the mouse (TradingView default),
+      // rather than snapping the horizontal line to the candle value.
+      mode: LWC.CrosshairMode ? LWC.CrosshairMode.Normal : 0,
+      vertLine: { color: '#758696', width: 1, style: LineStyle.Dashed, labelBackgroundColor: '#2962FF' },
+      horzLine: { color: '#758696', width: 1, style: LineStyle.Dashed, labelBackgroundColor: '#2962FF' },
+    },
+    rightPriceScale: {
+      borderColor: '#2a2e39',
+      scaleMargins: { top: 0.08, bottom: 0.08 },
+    },
+    timeScale: {
+      borderColor: '#2a2e39',
+      timeVisible: true,
+      secondsVisible: false,
+      rightOffset: 5,
+      barSpacing: 8,
+    },
+    handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+    handleScale:  { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+    autoSize: true,
+  });
+
+  const candleSeries = chart.addSeries(LWC.CandlestickSeries, {
+    upColor: '#089981',
+    downColor: '#F23645',
+    borderVisible: false,
+    wickUpColor: '#089981',
+    wickDownColor: '#F23645',
+  });
+  candleSeries.setData(payload.candles || []);
+
+  // ---- Range box primitive (Pine-Script style overlay) ----
+  function RangeBoxRenderer(source) { this._source = source; }
+  RangeBoxRenderer.prototype.draw = function (target) {
+    const source = this._source;
+    if (!source._chart || !source._series) return;
+    const ts = source._chart.timeScale();
+    const series = source._series;
+    target.useBitmapCoordinateSpace(function (scope) {
+      const ctx = scope.context;
+      const hr = scope.horizontalPixelRatio;
+      const vr = scope.verticalPixelRatio;
+      for (let i = 0; i < source._boxes.length; i++) {
+        const box = source._boxes[i];
+        const x1 = ts.timeToCoordinate(box.start);
+        const x2 = ts.timeToCoordinate(box.end);
+        const y1 = series.priceToCoordinate(box.high);
+        const y2 = series.priceToCoordinate(box.low);
+        if (x1 == null || x2 == null || y1 == null || y2 == null) continue;
+        const bx1 = Math.round(Math.min(x1, x2) * hr);
+        const bx2 = Math.round(Math.max(x1, x2) * hr);
+        const by1 = Math.round(Math.min(y1, y2) * vr);
+        const by2 = Math.round(Math.max(y1, y2) * vr);
+        const w = Math.max(1, bx2 - bx1);
+        const h = Math.max(1, by2 - by1);
+        if (box.fill) {
+          ctx.fillStyle = box.fill;
+          ctx.fillRect(bx1, by1, w, h);
+        }
+        if (box.border) {
+          ctx.strokeStyle = box.border;
+          ctx.lineWidth = Math.max(1, Math.round(hr));
+          // Draw each side separately so internal seams between adjacent
+          // boxes in the same chain can be suppressed.
+          ctx.beginPath();
+          // Top
+          ctx.moveTo(bx1, by1 + 0.5);
+          ctx.lineTo(bx2, by1 + 0.5);
+          // Bottom
+          ctx.moveTo(bx1, by2 - 0.5);
+          ctx.lineTo(bx2, by2 - 0.5);
+          // Left (unless suppressed by adjacency)
+          if (box.border_left !== false) {
+            ctx.moveTo(bx1 + 0.5, by1);
+            ctx.lineTo(bx1 + 0.5, by2);
+          }
+          // Right (unless suppressed by adjacency)
+          if (box.border_right !== false) {
+            ctx.moveTo(bx2 - 0.5, by1);
+            ctx.lineTo(bx2 - 0.5, by2);
+          }
+          // Step jogs at the shared boundary with the next box. These close
+          // the chain outline where the next box extends past the current one.
+          if (box.jog_right_top !== undefined && box.jog_right_top !== null) {
+            const yA = series.priceToCoordinate(box.high);
+            const yB = series.priceToCoordinate(box.jog_right_top);
+            if (yA != null && yB != null) {
+              const j1 = Math.round(Math.min(yA, yB) * vr);
+              const j2 = Math.round(Math.max(yA, yB) * vr);
+              ctx.moveTo(bx2 - 0.5, j1);
+              ctx.lineTo(bx2 - 0.5, j2);
+            }
+          }
+          if (box.jog_right_bottom !== undefined && box.jog_right_bottom !== null) {
+            const yA = series.priceToCoordinate(box.low);
+            const yB = series.priceToCoordinate(box.jog_right_bottom);
+            if (yA != null && yB != null) {
+              const j1 = Math.round(Math.min(yA, yB) * vr);
+              const j2 = Math.round(Math.max(yA, yB) * vr);
+              ctx.moveTo(bx2 - 0.5, j1);
+              ctx.lineTo(bx2 - 0.5, j2);
+            }
+          }
+          ctx.stroke();
+        }
+      }
+    });
+  };
+
+  function RangeBoxPaneView(source) {
+    this._source = source;
+    this._renderer = new RangeBoxRenderer(source);
+  }
+  RangeBoxPaneView.prototype.update = function () {};
+  RangeBoxPaneView.prototype.renderer = function () { return this._renderer; };
+  RangeBoxPaneView.prototype.zOrder = function () { return 'bottom'; };
+
+  function RangeBoxPrimitive(boxes) {
+    this._boxes = boxes || [];
+    this._chart = null;
+    this._series = null;
+    this._views = [new RangeBoxPaneView(this)];
+    this._requestUpdate = null;
+  }
+  RangeBoxPrimitive.prototype.attached = function (param) {
+    this._chart = param.chart;
+    this._series = param.series;
+    this._requestUpdate = param.requestUpdate || null;
+    if (this._requestUpdate) this._requestUpdate();
+  };
+  RangeBoxPrimitive.prototype.detached = function () {
+    this._chart = null;
+    this._series = null;
+    this._requestUpdate = null;
+  };
+  RangeBoxPrimitive.prototype.updateAllViews = function () {
+    for (let i = 0; i < this._views.length; i++) this._views[i].update();
+  };
+  RangeBoxPrimitive.prototype.paneViews = function () { return this._views; };
+
+  if ((payload.boxes || []).length > 0 && candleSeries.attachPrimitive) {
+    candleSeries.attachPrimitive(new RangeBoxPrimitive(payload.boxes));
+  }
+
+  window.__tvChart = chart;
+  window.__tvCandleSeries = candleSeries;
+
+  const styleMap = { solid: LineStyle.Solid, dashed: LineStyle.Dashed, dotted: LineStyle.Dotted,
+                     large_dashed: LineStyle.LargeDashed, sparse_dotted: LineStyle.SparseDotted };
+
+  (payload.lines || []).forEach(function (ln) {
+    const s = chart.addSeries(LWC.LineSeries, {
+      color: ln.color || '#9598a1',
+      lineWidth: ln.width || 1,
+      lineStyle: styleMap[ln.style] !== undefined ? styleMap[ln.style] : LineStyle.Solid,
+      lineType: ln.step ? 1 : 0, // WithSteps=1, Simple=0
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    s.setData(ln.data || []);
+  });
+
+  if ((payload.markers || []).length > 0 && LWC.createSeriesMarkers) {
+    LWC.createSeriesMarkers(candleSeries, payload.markers);
+  }
+
+  // Legend with symbol + live OHLC under crosshair
+  function fmt(v) { return (v === null || v === undefined) ? '-' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 6 }); }
+  function renderLegend(bar) {
+    const symLine = '<div class="sym">' + (cfg.symbol || '') + ' &middot; ' + (cfg.timeframe || '') + '</div>';
+    if (!bar) { legend.innerHTML = symLine; return; }
+    const cls = bar.close >= bar.open ? 'up' : 'down';
+    legend.innerHTML = symLine +
+      '<div class="ohlc ' + cls + '">' +
+      '<span>O ' + fmt(bar.open) + '</span>' +
+      '<span>H ' + fmt(bar.high) + '</span>' +
+      '<span>L ' + fmt(bar.low) + '</span>' +
+      '<span>C ' + fmt(bar.close) + '</span>' +
+      '</div>';
+  }
+  const last = (payload.candles || []).slice(-1)[0];
+  renderLegend(last);
+  chart.subscribeCrosshairMove(function (param) {
+    if (!param || !param.time) { renderLegend(last); return; }
+    const bar = param.seriesData ? param.seriesData.get(candleSeries) : null;
+    renderLegend(bar || last);
+  });
+
+  if (payload.view && payload.view.from !== undefined && payload.view.to !== undefined) {
+    chart.timeScale().setVisibleRange({ from: payload.view.from, to: payload.view.to });
+  } else {
+    chart.timeScale().fitContent();
+  }
+
+  // Optional: live WebSocket updates
+  if (payload.live && payload.live.stream_url) {
+    try {
+      const ws = new WebSocket(payload.live.stream_url);
+      ws.onmessage = function (ev) {
+        try {
+          const msg = JSON.parse(ev.data);
+          const k = msg.k || msg;
+          if (k && k.t !== undefined) {
+            candleSeries.update({
+              time: Math.floor(k.t / 1000),
+              open: parseFloat(k.o), high: parseFloat(k.h),
+              low: parseFloat(k.l), close: parseFloat(k.c),
+            });
+          }
+        } catch (e) { /* ignore malformed frames */ }
+      };
+    } catch (e) { /* ws unavailable; skip live updates */ }
+  }
+})();
+</script>
+</body>
+</html>
