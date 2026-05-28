@@ -179,6 +179,9 @@ class YulaState:
         self.highestPriceInPosition = None
         self.lowestPriceInPosition = None
 
+        # Structural invalidation stop (snapshotted at entry)
+        self.structureStopLevel = None
+
 
 class YulaStrategy:
     def __init__(self, config_overrides=None):
@@ -494,6 +497,17 @@ class YulaStrategy:
         state.trailingProfitStopLevel = None
         state.trailingProfitSystemTriggered = False
         state.trailingProfitStopTier = 0
+
+        # Snapshot the structural invalidation level at entry (fixed for the trade).
+        # Long is invalidated below the X-range floor; short above the Y-range ceiling.
+        state.structureStopLevel = None
+        if self.config.ENABLE_STRUCTURE_STOP:
+            struct_ref = self._get_range_based_stop_level(state, is_long)
+            if struct_ref is not None:
+                buf = self.config.STRUCTURE_STOP_BUFFER_PCT / 100.0
+                state.structureStopLevel = (
+                    struct_ref * (1 - buf) if is_long else struct_ref * (1 + buf)
+                )
 
         return direction
 
@@ -1406,7 +1420,26 @@ class YulaStrategy:
                 state.position_size = 0
                 self._reset_position_state(state)
                 return
-        
+
+        # --- STRUCTURAL INVALIDATION STOP (close beyond entry-time range edge) ---
+        if self.config.ENABLE_STRUCTURE_STOP and state.structureStopLevel is not None:
+            struct_hit = (
+                close <= state.structureStopLevel
+                if is_long
+                else close >= state.structureStopLevel
+            )
+            if struct_hit:
+                state.trades.append({
+                    "time": timestamp,
+                    "type": "EXIT_STRUCT",
+                    "price": close,
+                    "size": abs(state.position_size),
+                    "comment": "Structure Invalidation",
+                })
+                state.position_size = 0
+                self._reset_position_state(state)
+                return
+
         # Update Highest/Lowest for Trailing
         if is_long:
             if state.highestPriceInPosition is None or high > state.highestPriceInPosition:
@@ -1585,6 +1618,7 @@ class YulaStrategy:
         state.trailingProfitStopTier = 0
         state.highestPriceInPosition = None
         state.lowestPriceInPosition = None
+        state.structureStopLevel = None
 
     def _get_range_based_stop_level(self, state, is_long):
         # Pine: getRangeBasedStopLevel(isLong)

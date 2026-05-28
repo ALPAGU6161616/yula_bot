@@ -58,7 +58,7 @@ class Config:
     Y_FIB_LEVEL_CHOICE = FIB_618  # Default from Pine
     
     # Momentum Filter Settings
-    ENABLE_MOMENTUM_FILTER = True
+    ENABLE_MOMENTUM_FILTER = False
     MOMENTUM_MULTIPLIER = 1.0
     SHOW_MOMENTUM_INFO = False
     ENABLE_MOMENTUM_RANGE_BREAK_FILTER = False
@@ -76,8 +76,8 @@ class Config:
     
     # Advanced TP System
     ENABLE_ADVANCED_TP = _env_bool("ENABLE_ADVANCED_TP", True)
-    FIRST_TP_PERCENT = _env_float("FIRST_TP_PERCENT", 5.0)
-    FIRST_TP_QUANTITY = _env_float("FIRST_TP_QUANTITY", 20.0)
+    FIRST_TP_PERCENT = _env_float("FIRST_TP_PERCENT", 3.0)
+    FIRST_TP_QUANTITY = _env_float("FIRST_TP_QUANTITY", 100.0)
     SECOND_TP_PERCENT = _env_float("SECOND_TP_PERCENT", 99.0)
     ENABLE_BREAKEVEN_AFTER_FIRST_TP = _env_bool("ENABLE_BREAKEVEN_AFTER_FIRST_TP", True)
     
@@ -87,7 +87,7 @@ class Config:
     
     # Trailing Profit Stop
     ENABLE_TRAILING_PROFIT_STOP = True
-    TRAILING_PROFIT_LOSS_THRESHOLD_1 = 10.0
+    TRAILING_PROFIT_LOSS_THRESHOLD_1 = 5.0
     TRAILING_PROFIT_TAKE_LEVEL_1 = 0.1
     TRAILING_PROFIT_LOSS_THRESHOLD_2 = 99.0
     TRAILING_PROFIT_TAKE_LEVEL_2 = 1.0
@@ -97,6 +97,13 @@ class Config:
     # Risk Management
     MAX_LOSS_PERCENTAGE = 99.0
     ENABLE_MAX_LOSS_PROTECTION = False
+
+    # Structural Invalidation Stop
+    # Exit when price CLOSES beyond the entry-time range edge (long: X-range-low,
+    # short: Y-range-high) by a buffer — the setup that justified the trade is
+    # broken. Off by default; opt-in via dashboard for backtesting.
+    ENABLE_STRUCTURE_STOP = _env_bool("ENABLE_STRUCTURE_STOP", False)
+    STRUCTURE_STOP_BUFFER_PCT = _env_float("STRUCTURE_STOP_BUFFER_PCT", 0.5)
 
     # Minimum bar conditions (Pine: Min Bars Between Touch 2 and 3 ...)
     MIN_BARS_BETWEEN_TOUCH_2_3_XY = 1

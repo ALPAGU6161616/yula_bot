@@ -289,6 +289,7 @@ _TRADE_STYLE: Dict[str, Dict[str, str]] = {
     "EXIT_RTS":    {"shape": "circle",    "color": "#FF9100", "position": "aboveBar", "text": "RTS"},
     "EXIT_TPS":    {"shape": "circle",    "color": "#00E5FF", "position": "aboveBar", "text": "TPS"},
     "EXIT_REV":    {"shape": "square",    "color": "#00B0FF", "position": "aboveBar", "text": "REV"},
+    "EXIT_STRUCT": {"shape": "square",    "color": "#D32F2F", "position": "belowBar", "text": "STOP"},
 }
 
 

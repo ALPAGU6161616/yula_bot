@@ -1577,6 +1577,8 @@ with st.sidebar.expander("Pending Entry", expanded=False):
 with st.sidebar.expander("Risk Management", expanded=False):
     enable_max_loss = st.checkbox("Enable Max Loss Protection", value=Config.ENABLE_MAX_LOSS_PROTECTION, help="Aktif edilirse, Max Loss (%) seviyesinde işlem kapatılır.")
     max_loss_pct = st.number_input("Max Loss (%)", value=Config.MAX_LOSS_PERCENTAGE, min_value=0.1, max_value=100.0, step=0.5, help="Pozisyon bu yüzde kadar zararda olduğunda otomatik kapanır", key="max_loss_pct_input")
+    enable_structure_stop = st.checkbox("Enable Structure Stop", value=Config.ENABLE_STRUCTURE_STOP, help="Fiyat giriş anındaki range kenarının (long: X-low, short: Y-high) altına/üstüne kapanırsa setup geçersiz sayılıp çıkılır.")
+    structure_stop_buffer = st.number_input("Structure Stop Buffer (%)", value=Config.STRUCTURE_STOP_BUFFER_PCT, min_value=0.0, max_value=20.0, step=0.1, help="Range kenarının ne kadar ötesine kapanış stop'u tetikler (gürültü filtresi)", key="structure_stop_buffer_input")
 
 # 13. Visualization Settings
 with st.sidebar.expander("Visualization Settings", expanded=False):
@@ -1860,6 +1862,8 @@ with st.spinner("Calculating strategy..."):
         'ENABLE_PENDING_ENTRY': enable_pending,
         'MAX_LOSS_PERCENTAGE': max_loss_pct,
         'ENABLE_MAX_LOSS_PROTECTION': enable_max_loss,
+        'ENABLE_STRUCTURE_STOP': enable_structure_stop,
+        'STRUCTURE_STOP_BUFFER_PCT': structure_stop_buffer,
         'ENABLE_CD_THRESHOLD': bt_enable_cd_threshold,
         'CD_THRESHOLD_PERCENT': bt_cd_threshold_pct,
         
