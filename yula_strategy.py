@@ -54,6 +54,12 @@ class YulaState:
         self.condition_D = False
         self.condition_E = False
         self.condition_F = False
+        # Persistent "most recent range" verdicts — set definitively (True/False)
+        # on every L/S range formation so they can't go stale like condition_C/D.
+        # Hard-gate a SHORT on the latest L-range being a lower-low AND lower-high,
+        # and a LONG on the latest S-range being a higher-high AND higher-low.
+        self.lRangeLowerLowAndHigh = False
+        self.sRangeHigherHighAndLow = False
         
         # Active Ranges
         self.x_range_active = False
@@ -439,13 +445,13 @@ class YulaStrategy:
         is_long_allowed, _ = self._momentum_allowed(state)
         is_new_bullish = self._is_new_bullish_momentum_range(state)
         can_trade = not (state.position_size < 0 and state.trailingProfitSystemTriggered)
-        return can_trade and is_long_allowed and is_new_bullish and state.condition_C
+        return can_trade and is_long_allowed and is_new_bullish and state.condition_C and state.sRangeHigherHighAndLow
 
     def _should_open_short(self, state) -> bool:
         _, is_short_allowed = self._momentum_allowed(state)
         is_new_bearish = self._is_new_bearish_momentum_range(state)
         can_trade = not (state.position_size > 0 and state.trailingProfitSystemTriggered)
-        return can_trade and is_short_allowed and is_new_bearish and state.condition_D
+        return can_trade and is_short_allowed and is_new_bearish and state.condition_D and state.lRangeLowerLowAndHigh
 
     def _close_all(self, candle, state, reason: str):
         if state.position_size == 0:
@@ -915,16 +921,30 @@ class YulaStrategy:
                 state.activeBullishMomentumLRangeHigh = state.l_range_high
                 state.activeBullishMomentumLRangeLow = state.l_range_low
                 
-                if state.prev_l_range_low:
-                    is_lower = False
+                # condition_D (SHORT trigger) requires BOTH a lower low AND a lower
+                # high vs the previous L-range — a full lower-low / lower-high
+                # downtrend structure, not just a lower low.
+                if state.prev_l_range_low and state.prev_l_range_high:
                     if self.config.ENABLE_CD_THRESHOLD:
-                        threshold = state.prev_l_range_low * (1 - self.config.CD_THRESHOLD_PERCENT / 100)
-                        is_lower = state.l_range_low < threshold
+                        low_threshold = state.prev_l_range_low * (1 - self.config.CD_THRESHOLD_PERCENT / 100)
+                        high_threshold = state.prev_l_range_high * (1 - self.config.CD_THRESHOLD_PERCENT / 100)
+                        is_lower_low = state.l_range_low < low_threshold
+                        is_lower_high = state.l_range_high < high_threshold
                     else:
-                        is_lower = state.l_range_low < state.prev_l_range_low
-                    
-                    if is_lower:
+                        is_lower_low = state.l_range_low < state.prev_l_range_low
+                        is_lower_high = state.l_range_high < state.prev_l_range_high
+
+                    # Persistent verdict of the MOST RECENT L-range: True only when
+                    # both a lower low AND a lower high occurred vs the previous
+                    # L-range. Recomputed (True/False) on every formation so it never
+                    # goes stale. ANDed into _should_open_short as a hard gate.
+                    state.lRangeLowerLowAndHigh = bool(is_lower_low and is_lower_high)
+
+                    if is_lower_low and is_lower_high:
                         state.condition_D = True
+                else:
+                    # No previous L-range to compare against -> no downtrend yet.
+                    state.lRangeLowerLowAndHigh = False
                 
                 if state.prev_l_range_high:
                     is_higher = False
@@ -1036,16 +1056,30 @@ class YulaStrategy:
                 state.activeBearishMomentumSRangeHigh = state.s_range_high
                 state.activeBearishMomentumSRangeLow = state.s_range_low
                 
-                if state.prev_s_range_high:
-                    is_higher = False
+                # condition_C (LONG trigger) requires BOTH a higher high AND a higher
+                # low vs the previous S-range — a full higher-high / higher-low
+                # uptrend structure, not just a higher high.
+                if state.prev_s_range_high and state.prev_s_range_low:
                     if self.config.ENABLE_CD_THRESHOLD:
-                        threshold = state.prev_s_range_high * (1 + self.config.CD_THRESHOLD_PERCENT / 100)
-                        is_higher = state.s_range_high > threshold
+                        high_threshold = state.prev_s_range_high * (1 + self.config.CD_THRESHOLD_PERCENT / 100)
+                        low_threshold = state.prev_s_range_low * (1 + self.config.CD_THRESHOLD_PERCENT / 100)
+                        is_higher_high = state.s_range_high > high_threshold
+                        is_higher_low = state.s_range_low > low_threshold
                     else:
-                        is_higher = state.s_range_high > state.prev_s_range_high
-                    
-                    if is_higher:
+                        is_higher_high = state.s_range_high > state.prev_s_range_high
+                        is_higher_low = state.s_range_low > state.prev_s_range_low
+
+                    # Persistent verdict of the MOST RECENT S-range: True only when
+                    # both a higher high AND a higher low occurred vs the previous
+                    # S-range. Recomputed (True/False) on every formation so it never
+                    # goes stale. ANDed into _should_open_long as a hard gate.
+                    state.sRangeHigherHighAndLow = bool(is_higher_high and is_higher_low)
+
+                    if is_higher_high and is_higher_low:
                         state.condition_C = True
+                else:
+                    # No previous S-range to compare against -> no uptrend yet.
+                    state.sRangeHigherHighAndLow = False
                 
                 if state.prev_s_range_low:
                     is_lower = False
