@@ -1286,7 +1286,7 @@ st.sidebar.subheader("Backtest")
 st.sidebar.caption("Backtest range uses UTC+3.")
 backtest_use_nav_range = st.sidebar.toggle("Use Navigation Range", value=False, key="bt_use_nav_range")
 backtest_use_chart_range = st.sidebar.toggle("Use Chart Range", value=True, key="bt_use_chart_range", disabled=backtest_use_nav_range)
-backtest_close_end = st.sidebar.toggle("Close Open Position At End", value=True, key="bt_close_end")
+backtest_close_end = st.sidebar.toggle("Close Open Position At End", value=False, key="bt_close_end")
 backtest_show_exec = st.sidebar.toggle("Show Execution List", value=False, key="bt_show_exec")
 
 cfg_backtest = Config()

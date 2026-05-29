@@ -76,9 +76,9 @@ class Config:
     
     # Advanced TP System
     ENABLE_ADVANCED_TP = _env_bool("ENABLE_ADVANCED_TP", True)
-    FIRST_TP_PERCENT = _env_float("FIRST_TP_PERCENT", 3.0)
-    FIRST_TP_QUANTITY = _env_float("FIRST_TP_QUANTITY", 100.0)
-    SECOND_TP_PERCENT = _env_float("SECOND_TP_PERCENT", 99.0)
+    FIRST_TP_PERCENT = _env_float("FIRST_TP_PERCENT", 1.0)
+    FIRST_TP_QUANTITY = _env_float("FIRST_TP_QUANTITY", 10.0)
+    SECOND_TP_PERCENT = _env_float("SECOND_TP_PERCENT", 5.0)
     ENABLE_BREAKEVEN_AFTER_FIRST_TP = _env_bool("ENABLE_BREAKEVEN_AFTER_FIRST_TP", True)
     
     # Range Trailing Stop
