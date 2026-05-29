@@ -105,6 +105,14 @@ class Config:
     ENABLE_STRUCTURE_STOP = _env_bool("ENABLE_STRUCTURE_STOP", False)
     STRUCTURE_STOP_BUFFER_PCT = _env_float("STRUCTURE_STOP_BUFFER_PCT", 0.5)
 
+    # Range-Stop + R-multiple TP Mode (opt-in, replaces ALL normal exits)
+    # When ON the strategy abandons its fixed-TP / breakeven / trailing / structure
+    # exits and manages every trade purely as: stop at the entry-time range edge
+    # (long: X-range-low, short: Y-range-high), take-profit at RR_MULTIPLE x that
+    # risk distance. One position at a time, no mid-trade reversals. Off by default.
+    ENABLE_RR_MODE = _env_bool("ENABLE_RR_MODE", False)
+    RR_MULTIPLE = _env_float("RR_MULTIPLE", 2.0)
+
     # Minimum bar conditions (Pine: Min Bars Between Touch 2 and 3 ...)
     MIN_BARS_BETWEEN_TOUCH_2_3_XY = 1
     MIN_BARS_BETWEEN_TOUCH_2_3_LS = 1

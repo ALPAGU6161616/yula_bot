@@ -182,6 +182,10 @@ class YulaState:
         # Structural invalidation stop (snapshotted at entry)
         self.structureStopLevel = None
 
+        # Range-stop + R-multiple TP mode (snapshotted at entry)
+        self.rrStopLevel = None
+        self.rrTpLevel = None
+
 
 class YulaStrategy:
     def __init__(self, config_overrides=None):
@@ -288,11 +292,13 @@ class YulaStrategy:
         self._check_exits(candle, state, index)
 
         # 8) Entry logic (time-filtered)
-        if time_allowed_for_entry and signal is None:
+        # RR mode holds one position at a time until SL/TP — never reverse mid-trade.
+        allow_entry = (not self.config.ENABLE_RR_MODE) or state.position_size == 0
+        if time_allowed_for_entry and signal is None and allow_entry:
             if self._should_open_long(state):
                 signal = self._handle_long_entry(candle, state, index)
 
-        if time_allowed_for_entry and signal is None:
+        if time_allowed_for_entry and signal is None and allow_entry:
             if self._should_open_short(state):
                 signal = self._handle_short_entry(candle, state, index)
 
@@ -458,6 +464,25 @@ class YulaStrategy:
         is_long = direction == "LONG"
         entry_price = candle["close"]
 
+        # RR mode: derive the structural stop and R-multiple target up front. If the
+        # range edge isn't beyond the entry (risk <= 0) the setup is invalid, so skip
+        # the trade entirely — matches the backtest, which never opened these.
+        rr_stop = None
+        rr_tp = None
+        if self.config.ENABLE_RR_MODE:
+            rng = self._get_range_based_stop_level(state, is_long)
+            if rng is None:
+                return None
+            risk = (entry_price - rng) if is_long else (rng - entry_price)
+            if risk <= 0:
+                return None
+            rr_stop = rng
+            rr_tp = (
+                entry_price + self.config.RR_MULTIPLE * risk
+                if is_long
+                else entry_price - self.config.RR_MULTIPLE * risk
+            )
+
         state.position_size = 1 if is_long else -1
         state.entry_price = entry_price
 
@@ -508,6 +533,10 @@ class YulaStrategy:
                 state.structureStopLevel = (
                     struct_ref * (1 - buf) if is_long else struct_ref * (1 + buf)
                 )
+
+        # RR-mode stop/target computed at the top (None when RR mode is off).
+        state.rrStopLevel = rr_stop
+        state.rrTpLevel = rr_tp
 
         return direction
 
@@ -1400,6 +1429,47 @@ class YulaStrategy:
         
         is_long = state.position_size > 0
         
+        # --- RANGE-STOP + R-MULTIPLE TP MODE (replaces all normal exits) ---
+        # Pure SL/TP management: stop = entry-time range edge, target = RR x risk.
+        # Intrabar & gap-aware; same-bar ambiguity resolved stop-first (conservative).
+        if self.config.ENABLE_RR_MODE:
+            if state.rrStopLevel is None or state.rrTpLevel is None:
+                return  # invalid setup — entry should have been skipped
+            op = candle["open"]
+            sl = state.rrStopLevel
+            tp = state.rrTpLevel
+            exit_price = None
+            exit_type = None
+            if is_long:
+                if op <= sl:
+                    exit_price, exit_type = op, "EXIT_SL"      # gap down through stop
+                elif op >= tp:
+                    exit_price, exit_type = op, "EXIT_RR_TP"   # gap up through target
+                elif low <= sl:
+                    exit_price, exit_type = sl, "EXIT_SL"
+                elif high >= tp:
+                    exit_price, exit_type = tp, "EXIT_RR_TP"
+            else:
+                if op >= sl:
+                    exit_price, exit_type = op, "EXIT_SL"      # gap up through stop
+                elif op <= tp:
+                    exit_price, exit_type = op, "EXIT_RR_TP"   # gap down through target
+                elif high >= sl:
+                    exit_price, exit_type = sl, "EXIT_SL"
+                elif low <= tp:
+                    exit_price, exit_type = tp, "EXIT_RR_TP"
+            if exit_type is not None:
+                state.trades.append({
+                    "time": timestamp,
+                    "type": exit_type,
+                    "price": exit_price,
+                    "size": abs(state.position_size),
+                    "comment": "RR Stop" if exit_type == "EXIT_SL" else "RR Target",
+                })
+                state.position_size = 0
+                self._reset_position_state(state)
+            return
+
         # --- MAX LOSS CHECK (PRIORITY) ---
         if self.config.ENABLE_MAX_LOSS_PROTECTION and self.config.MAX_LOSS_PERCENTAGE > 0:
             # Check against Low (Long) or High (Short) for intra-bar stop
@@ -1619,6 +1689,8 @@ class YulaStrategy:
         state.highestPriceInPosition = None
         state.lowestPriceInPosition = None
         state.structureStopLevel = None
+        state.rrStopLevel = None
+        state.rrTpLevel = None
 
     def _get_range_based_stop_level(self, state, is_long):
         # Pine: getRangeBasedStopLevel(isLong)

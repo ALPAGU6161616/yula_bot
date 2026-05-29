@@ -1579,6 +1579,9 @@ with st.sidebar.expander("Risk Management", expanded=False):
     max_loss_pct = st.number_input("Max Loss (%)", value=Config.MAX_LOSS_PERCENTAGE, min_value=0.1, max_value=100.0, step=0.5, help="Pozisyon bu yüzde kadar zararda olduğunda otomatik kapanır", key="max_loss_pct_input")
     enable_structure_stop = st.checkbox("Enable Structure Stop", value=Config.ENABLE_STRUCTURE_STOP, help="Fiyat giriş anındaki range kenarının (long: X-low, short: Y-high) altına/üstüne kapanırsa setup geçersiz sayılıp çıkılır.")
     structure_stop_buffer = st.number_input("Structure Stop Buffer (%)", value=Config.STRUCTURE_STOP_BUFFER_PCT, min_value=0.0, max_value=20.0, step=0.1, help="Range kenarının ne kadar ötesine kapanış stop'u tetikler (gürültü filtresi)", key="structure_stop_buffer_input")
+    st.markdown("---")
+    enable_rr_mode = st.checkbox("Enable R:R Mode", value=Config.ENABLE_RR_MODE, help="Açık olduğunda strateji TÜM normal çıkışlarını (TP1/TP2/BE/trailing/structure) bırakır ve her işlemi sadece şu mantıkla yönetir: stop = giriş anındaki range kenarı (long: X-low, short: Y-high), take-profit = RR x risk mesafesi. Aynı anda tek pozisyon, ters sinyalde dönüş yok.")
+    rr_multiple = st.number_input("Reward : Risk (RR)", value=Config.RR_MULTIPLE, min_value=0.5, max_value=10.0, step=0.5, help="Take-profit risk mesafesinin kaç katı olsun (2.0 = 2:1). Başabaş kazanma oranı = 1/(1+RR).", key="rr_multiple_input")
 
 # 13. Visualization Settings
 with st.sidebar.expander("Visualization Settings", expanded=False):
@@ -1864,6 +1867,8 @@ with st.spinner("Calculating strategy..."):
         'ENABLE_MAX_LOSS_PROTECTION': enable_max_loss,
         'ENABLE_STRUCTURE_STOP': enable_structure_stop,
         'STRUCTURE_STOP_BUFFER_PCT': structure_stop_buffer,
+        'ENABLE_RR_MODE': enable_rr_mode,
+        'RR_MULTIPLE': rr_multiple,
         'ENABLE_CD_THRESHOLD': bt_enable_cd_threshold,
         'CD_THRESHOLD_PERCENT': bt_cd_threshold_pct,
         
